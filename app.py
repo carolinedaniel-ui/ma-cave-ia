@@ -33,15 +33,17 @@ def save_to_github(df_updated, contents):
 # --- INTERFACE ---
 st.title("🍷 Ma Gestion de Cave")
 
-photo = st.camera_input("Scanner une étiquette")
+# MODIFICATION ICI : On utilise label_visibility pour un affichage plus propre sur mobile
+# Note : Pour forcer la caméra arrière sur Android/iOS, il est crucial d'ouvrir 
+# l'application dans Chrome ou Safari (hors de l'aperçu Instagram/WhatsApp)
+photo = st.camera_input("Scanner une étiquette", label_visibility="visible")
 
 if photo:
     if "current_vin" not in st.session_state:
         with st.spinner("Analyse complète de l'étiquette..."):
             base64_image = base64.b64encode(photo.getvalue()).decode('utf-8')
             
-            # 1. ANALYSE VISION (Toutes les infos de base)
-            # On demande tout d'un coup pour que l'IA ait le contexte global du vin
+            # 1. ANALYSE VISION
             v_res = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "user", "content": [
@@ -50,20 +52,17 @@ if photo:
                 ]}]
             ).choices[0].message.content.strip().replace('"', '').split(";")
 
-            # Sécurité : On s'assure d'avoir les 8 champs demandés
             while len(v_res) < 8:
                 v_res.append("N.C")
 
-            # 2. VÉRIFICATION BIBLIOTHÈQUE (Optimisation Accords/Cépages)
+            # 2. VÉRIFICATION BIBLIOTHÈQUE
             df_cave, contents = get_csv_from_github()
-            nom_ia, maison_ia = v_res[0], v_res[1]
+            nom_ia = v_res[0]
             
-            # On cherche si cette Maison/Vin existe déjà pour "écraser" les N.C de l'IA par vos données fiables
             match = df_cave[df_cave['Nom'].str.contains(nom_ia, case=False, na=False)].head(1)
             
             if not match.empty:
                 st.info(f"✨ Informations complétées par votre bibliothèque pour {nom_ia}")
-                # Si l'IA a raté les cépages ou accords sur cette photo, on prend les anciens
                 v_cepages = match['Cepages'].values[0] if v_res[4] == "N.C" else v_res[4]
                 v_accords = match['Accords'].values[0] if v_res[6] == "N.C" else v_res[6]
             else:
@@ -90,7 +89,6 @@ if photo:
         
         v["Quantite"] = st.number_input("Nombre de bouteilles", min_value=1, value=int(v.get("Quantite", 1)))
         
-        # Affichage structuré pour modification
         col1, col2 = st.columns(2)
         with col1:
             v["Nom"] = st.text_input("Nom", v["Nom"])
@@ -119,7 +117,6 @@ tab1, tab2 = st.tabs(["📊 Inventaire", "📢 À Boire"])
 with tab1:
     df_c, _ = get_csv_from_github()
     if not df_c.empty:
-        # Affichage de toutes les colonnes demandées
         st.dataframe(df_c[['Quantite', 'Nom', 'Maison', 'Appellation', 'Annee', 'Note_Vivino', 'Apogee']])
     else:
         st.info("Cave vide.")
