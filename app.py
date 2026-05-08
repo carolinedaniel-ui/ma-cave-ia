@@ -10,14 +10,12 @@ import io
 st.set_page_config(page_title="Ma Cave", page_icon="🍷")
 
 try:
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
     GITHUB_REPO = st.secrets["GITHUB_REPO"]
 except:
     st.error("Secrets non configurés.")
     st.stop()
-
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 # --- FONCTIONS TECHNIQUES ---
 def get_csv_from_github():
@@ -30,121 +28,109 @@ def get_csv_from_github():
 def save_to_github(df_updated, contents):
     g = Github(GITHUB_TOKEN)
     repo = g.get_repo(GITHUB_REPO)
-    repo.update_file(contents.path, "Mise à jour stock cave", df_updated.to_csv(index=False), contents.sha)
+    repo.update_file(contents.path, "Mise à jour cave", df_updated.to_csv(index=False), contents.sha)
 
 # --- INTERFACE ---
-st.title("🍷 Ma Cave Intelligente")
+st.title("🍷 Ma Gestion de Cave")
 
 photo = st.camera_input("Scanner une étiquette")
 
 if photo:
     if "current_vin" not in st.session_state:
-        with st.spinner("Analyse et recherche..."):
-            # 1. Extraction Vision (Identité)
+        with st.spinner("Analyse complète de l'étiquette..."):
             base64_image = base64.b64encode(photo.getvalue()).decode('utf-8')
-            v_res_raw = client.chat.completions.create(
+            
+            # 1. ANALYSE VISION (Toutes les infos de base)
+            # On demande tout d'un coup pour que l'IA ait le contexte global du vin
+            v_res = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[{"role": "user", "content": [
-                    {"type": "text", "text": "Identifie ce vin. Réponds uniquement: Nom;Maison;Appellation;Annee"},
+                    {"type": "text", "text": "Analyse ce vin. Réponds uniquement avec ce format strict : Nom;Maison;Appellation;Annee;Cepages;Note_Vivino;Accords;Apogee"},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                 ]}]
-            ).choices[0].message.content.strip().replace('"', '')
-            
-            v_res = v_res_raw.split(";")
-            
-            if len(v_res) < 4:
-                st.error("Identification impossible. Réessayez.")
-                st.stop()
+            ).choices[0].message.content.strip().replace('"', '').split(";")
 
-            nom_v, maison_v, app_v, annee_v = v_res[0], v_res[1], v_res[2], v_res[3]
+            # Sécurité : On s'assure d'avoir les 8 champs demandés
+            while len(v_res) < 8:
+                v_res.append("N.C")
 
-            # 2. Vérification Bibliothèque
+            # 2. VÉRIFICATION BIBLIOTHÈQUE (Optimisation Accords/Cépages)
             df_cave, contents = get_csv_from_github()
-            existing_vin = df_cave[df_cave['Nom'].str.contains(nom_v, case=False, na=False)].head(1)
+            nom_ia, maison_ia = v_res[0], v_res[1]
             
-            cepages, accords = ("N.C", "N.C")
-            if not existing_vin.empty:
-                cepages = str(existing_vin['Cepages'].values[0])
-                accords = str(existing_vin['Accords'].values[0])
-                st.info("✨ Vin reconnu dans la bibliothèque.")
-
-            # 3. Requête Texte (Note & Apogée)
-            q_text = f"Pour le vin {nom_v} {maison_v} millésime {annee_v}, donne UNIQUEMENT la note Vivino et l'année d'apogée max (ex: 2030). Format: Note;Apogee"
-            if cepages == "N.C":
-                q_text += ";Cepages;Accords"
-
-            m_res_raw = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": q_text}]
-            ).choices[0].message.content.strip().replace('"', '')
+            # On cherche si cette Maison/Vin existe déjà pour "écraser" les N.C de l'IA par vos données fiables
+            match = df_cave[df_cave['Nom'].str.contains(nom_ia, case=False, na=False)].head(1)
             
-            m_res = m_res_raw.split(";")
+            if not match.empty:
+                st.info(f"✨ Informations complétées par votre bibliothèque pour {nom_ia}")
+                # Si l'IA a raté les cépages ou accords sur cette photo, on prend les anciens
+                v_cepages = match['Cepages'].values[0] if v_res[4] == "N.C" else v_res[4]
+                v_accords = match['Accords'].values[0] if v_res[6] == "N.C" else v_res[6]
+            else:
+                v_cepages, v_accords = v_res[4], v_res[6]
 
-            # Sécurité anti-bug d'index
-            note_final = m_res[0] if len(m_res) > 0 else "N.C"
-            apogee_final = m_res[1] if len(m_res) > 1 else "N.C"
-            cepages_final = cepages if cepages != "N.C" else (m_res[2] if len(m_res) > 2 else "N.C")
-            accords_final = accords if accords != "N.C" else (m_res[3] if len(m_res) > 3 else "N.C")
-
+            # 3. CRÉATION DE LA FICHE SESSION
             st.session_state.current_vin = {
                 "Date": datetime.now().strftime("%d/%m/%Y"),
-                "Nom": nom_v, "Maison": maison_v, "Appellation": app_v, "Annee": annee_v,
-                "Note_Vivino": note_final, "Apogee": apogee_final,
-                "Cepages": cepages_final, "Accords": accords_final,
+                "Nom": v_res[0],
+                "Maison": v_res[1],
+                "Appellation": v_res[2],
+                "Annee": v_res[3],
+                "Cepages": v_cepages,
+                "Note_Vivino": v_res[5],
+                "Accords": v_accords,
+                "Apogee": v_res[7],
                 "Quantite": 1
             }
 
     # --- VALIDATION ---
     if "current_vin" in st.session_state:
         v = st.session_state.current_vin
-        st.subheader(f"📝 {v['Nom']} {v['Annee']}")
+        st.subheader(f"📝 {v['Nom']} ({v['Annee']})")
         
         v["Quantite"] = st.number_input("Nombre de bouteilles", min_value=1, value=int(v.get("Quantite", 1)))
         
-        with st.expander("Vérifier les détails"):
+        # Affichage structuré pour modification
+        col1, col2 = st.columns(2)
+        with col1:
             v["Nom"] = st.text_input("Nom", v["Nom"])
-            v["Annee"] = st.text_input("Millésime", v["Annee"])
+            v["Maison"] = st.text_input("Maison", v["Maison"])
+            v["Appellation"] = st.text_input("Appellation", v["Appellation"])
+            v["Annee"] = st.text_input("Année", v["Annee"])
+        with col2:
+            v["Cepages"] = st.text_input("Cépages", v["Cepages"])
             v["Note_Vivino"] = st.text_input("Note Vivino", v["Note_Vivino"])
-            v["Apogee"] = st.text_input("Apogée (Année)", v["Apogee"])
+            v["Apogee"] = st.text_input("Apogée", v["Apogee"])
             v["Accords"] = st.text_area("Accords", v["Accords"])
 
-        if st.button("💾 Enregistrer"):
+        if st.button("💾 Confirmer l'ajout"):
             df_cave, contents = get_csv_from_github()
             new_row = pd.DataFrame([v])
             df_updated = pd.concat([df_cave, new_row], ignore_index=True)
             save_to_github(df_updated, contents)
-            st.success("Enregistré !")
+            st.success("Enregistré avec succès !")
             del st.session_state.current_vin
             st.rerun()
 
-# --- MODULE DE GESTION DU STOCK ---
+# --- ONGLETS BAS DE PAGE ---
 st.markdown("---")
-tab1, tab2 = st.tabs(["📊 Inventaire", "📢 À Boire Maintenant"])
+tab1, tab2 = st.tabs(["📊 Inventaire", "📢 À Boire"])
 
 with tab1:
-    if st.button("Actualiser la liste"):
-        st.rerun()
     df_c, _ = get_csv_from_github()
     if not df_c.empty:
-        st.dataframe(df_c[['Quantite', 'Nom', 'Annee', 'Apogee', 'Note_Vivino']].sort_index(ascending=False))
+        # Affichage de toutes les colonnes demandées
+        st.dataframe(df_c[['Quantite', 'Nom', 'Maison', 'Appellation', 'Annee', 'Note_Vivino', 'Apogee']])
     else:
-        st.info("La cave est vide.")
+        st.info("Cave vide.")
 
 with tab2:
-    df_c, _ = get_csv_from_github()
     if not df_c.empty:
-        annee_actuelle = datetime.now().year
-        # Nettoyage de la colonne Apogée pour le calcul
+        annee_now = datetime.now().year
         df_c['Apogee_Num'] = pd.to_numeric(df_c['Apogee'], errors='coerce')
-        alertes = df_c[df_c['Apogee_Num'] <= (annee_actuelle + 1)]
-        
+        alertes = df_c[df_c['Apogee_Num'] <= (annee_now + 1)]
         if not alertes.empty:
-            st.warning(f"Vous avez {len(alertes)} vins à boire (échéance {annee_actuelle} ou {annee_actuelle + 1})")
+            st.warning(f"{len(alertes)} bouteilles à boire rapidement.")
             st.table(alertes[['Quantite', 'Nom', 'Annee', 'Apogee']])
         else:
-            st.success("Toutes vos bouteilles peuvent encore attendre.")
-    else:
-        st.info("Aucune donnée disponible.")
-
-# Style
-st.markdown("<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}</style>", unsafe_allow_html=True)
+            st.success("Rien d'urgent !")
