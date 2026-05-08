@@ -53,7 +53,7 @@ if photo:
             v_res = v_res_raw.split(";")
             
             if len(v_res) < 4:
-                st.error("L'IA n'a pas pu identifier le vin correctement. Réessayez avec une photo plus nette.")
+                st.error("Identification impossible. Réessayez.")
                 st.stop()
 
             nom_v, maison_v, app_v, annee_v = v_res[0], v_res[1], v_res[2], v_res[3]
@@ -64,12 +64,12 @@ if photo:
             
             cepages, accords = ("N.C", "N.C")
             if not existing_vin.empty:
-                cepages = existing_vin['Cepages'].values[0]
-                accords = existing_vin['Accords'].values[0]
-                st.info("✨ Vin connu dans la bibliothèque.")
+                cepages = str(existing_vin['Cepages'].values[0])
+                accords = str(existing_vin['Accords'].values[0])
+                st.info("✨ Vin reconnu dans la bibliothèque.")
 
             # 3. Requête Texte (Note & Apogée)
-            q_text = f"Pour le vin {nom_v} {maison_v} millésime {annee_v}, donne UNIQUEMENT la note Vivino et l'année d'apogée. Format: Note;Apogee"
+            q_text = f"Pour le vin {nom_v} {maison_v} millésime {annee_v}, donne UNIQUEMENT la note Vivino et l'année d'apogée max (ex: 2030). Format: Note;Apogee"
             if cepages == "N.C":
                 q_text += ";Cepages;Accords"
 
@@ -80,8 +80,7 @@ if photo:
             
             m_res = m_res_raw.split(";")
 
-            # --- SÉCURITÉ ANTI-BUG (L'ERREUR ÉTAIT ICI) ---
-            # On remplit avec des valeurs par défaut si l'IA ne renvoie pas assez d'éléments
+            # Sécurité anti-bug d'index
             note_final = m_res[0] if len(m_res) > 0 else "N.C"
             apogee_final = m_res[1] if len(m_res) > 1 else "N.C"
             cepages_final = cepages if cepages != "N.C" else (m_res[2] if len(m_res) > 2 else "N.C")
@@ -90,10 +89,8 @@ if photo:
             st.session_state.current_vin = {
                 "Date": datetime.now().strftime("%d/%m/%Y"),
                 "Nom": nom_v, "Maison": maison_v, "Appellation": app_v, "Annee": annee_v,
-                "Note_Vivino": note_final,
-                "Apogee": apogee_final,
-                "Cepages": cepages_final,
-                "Accords": accords_final,
+                "Note_Vivino": note_final, "Apogee": apogee_final,
+                "Cepages": cepages_final, "Accords": accords_final,
                 "Quantite": 1
             }
 
@@ -104,14 +101,14 @@ if photo:
         
         v["Quantite"] = st.number_input("Nombre de bouteilles", min_value=1, value=int(v.get("Quantite", 1)))
         
-        with st.expander("Vérifier/Modifier les détails"):
+        with st.expander("Vérifier les détails"):
             v["Nom"] = st.text_input("Nom", v["Nom"])
             v["Annee"] = st.text_input("Millésime", v["Annee"])
             v["Note_Vivino"] = st.text_input("Note Vivino", v["Note_Vivino"])
-            v["Apogee"] = st.text_input("Apogée", v["Apogee"])
+            v["Apogee"] = st.text_input("Apogée (Année)", v["Apogee"])
             v["Accords"] = st.text_area("Accords", v["Accords"])
 
-        if st.button("💾 Enregistrer dans la cave"):
+        if st.button("💾 Enregistrer"):
             df_cave, contents = get_csv_from_github()
             new_row = pd.DataFrame([v])
             df_updated = pd.concat([df_cave, new_row], ignore_index=True)
@@ -120,8 +117,34 @@ if photo:
             del st.session_state.current_vin
             st.rerun()
 
-# --- VUE CAVE ---
+# --- MODULE DE GESTION DU STOCK ---
 st.markdown("---")
-if st.checkbox("📊 Voir mon stock"):
+tab1, tab2 = st.tabs(["📊 Inventaire", "📢 À Boire Maintenant"])
+
+with tab1:
+    if st.button("Actualiser la liste"):
+        st.rerun()
     df_c, _ = get_csv_from_github()
-    st.dataframe(df_c[['Quantite', 'Nom', 'Annee', 'Apogee']])
+    if not df_c.empty:
+        st.dataframe(df_c[['Quantite', 'Nom', 'Annee', 'Apogee', 'Note_Vivino']].sort_index(ascending=False))
+    else:
+        st.info("La cave est vide.")
+
+with tab2:
+    df_c, _ = get_csv_from_github()
+    if not df_c.empty:
+        annee_actuelle = datetime.now().year
+        # Nettoyage de la colonne Apogée pour le calcul
+        df_c['Apogee_Num'] = pd.to_numeric(df_c['Apogee'], errors='coerce')
+        alertes = df_c[df_c['Apogee_Num'] <= (annee_actuelle + 1)]
+        
+        if not alertes.empty:
+            st.warning(f"Vous avez {len(alertes)} vins à boire (échéance {annee_actuelle} ou {annee_actuelle + 1})")
+            st.table(alertes[['Quantite', 'Nom', 'Annee', 'Apogee']])
+        else:
+            st.success("Toutes vos bouteilles peuvent encore attendre.")
+    else:
+        st.info("Aucune donnée disponible.")
+
+# Style
+st.markdown("<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}</style>", unsafe_allow_html=True)
